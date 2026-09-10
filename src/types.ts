@@ -1,12 +1,54 @@
 export type LatLng = { lat: number; lng: number };
 
-export type StopSource = 'map' | 'search' | 'coords' | 'gps' | 'share' | 'demo';
+export type StopSource = 'map' | 'search' | 'coords' | 'gps' | 'share' | 'demo' | 'customer';
+
+export type AddressKind = 'principal' | 'secundaria';
+
+/** Dirección de un cliente: texto legible + coordenadas para el ruteo. */
+export type CustomerAddress = {
+  texto: string;
+  lat: number;
+  lng: number;
+};
+
+/** Datos fijos de un cliente (base de datos local). */
+export type Customer = {
+  id: string;
+  razonSocial: string;
+  direccion: CustomerAddress;
+  telefono: string;
+  referencias: string;
+  direccionSecundaria?: CustomerAddress;
+  telefonoAdicional?: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/**
+ * Datos variables de la orden de entrega asociada a una parada, más una copia de los
+ * datos del cliente en ese momento (así el resumen funciona aunque se comparta la ruta
+ * a otro dispositivo que no tenga la base de clientes).
+ */
+export type StopOrder = {
+  customerId?: string;
+  addressKind: AddressKind;
+  /** Número de Guía de Remisión */
+  gr: string;
+  /** Cantidad de bultos; null = sin indicar */
+  bultos: number | null;
+  razonSocial: string;
+  telefono: string;
+  telefonoAdicional?: string;
+  direccionTexto: string;
+  referencias: string;
+};
 
 export type Stop = LatLng & {
   id: string;
-  /** Dirección o nombre legible. Puede faltar si aún no se geocodificó. */
+  /** Nombre legible (razón social o dirección). */
   label?: string;
   source: StopSource;
+  order?: StopOrder;
 };
 
 /** Cómo debe terminar la ruta. */

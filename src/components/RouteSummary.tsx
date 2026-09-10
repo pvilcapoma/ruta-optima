@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { OptimizedRoute } from '../types';
 import { buildNavigationLinks } from '../lib/mapsLinks';
+import { wrapCodeBlock } from '../lib/clipboard';
 import { formatClock, formatCoords, formatDistance, formatDuration } from '../lib/format';
 
 type Props = {
@@ -8,6 +9,8 @@ type Props = {
   stale: boolean;
   originId: string;
   departureLabel: string;
+  /** Texto del resumen para el chofer (formato obligatorio), ya generado en App. */
+  clipboardText: string;
   onShare: () => void;
   selectedLeg: number | null;
   onSelectLeg: (index: number) => void;
@@ -23,8 +26,9 @@ function name(s: { label?: string; lat: number; lng: number }): string {
   return s.label ?? formatCoords(s.lat, s.lng, 4);
 }
 
-export function RouteSummary({ route, stale, originId, departureLabel, onShare, selectedLeg, onSelectLeg }: Props) {
+export function RouteSummary({ route, stale, originId, departureLabel, clipboardText, onShare, selectedLeg, onSelectLeg }: Props) {
   const [copied, setCopied] = useState(false);
+  const [fenced, setFenced] = useState(false);
   const sectionRef = useRef<HTMLElement>(null);
   const links = useMemo(() => buildNavigationLinks(route.ordered), [route]);
 
@@ -36,16 +40,8 @@ export function RouteSummary({ route, stale, originId, departureLabel, onShare, 
   const last = route.ordered[route.ordered.length - 1];
   const returnsToOrigin = last.id === originId;
 
-  const copyOrder = async () => {
-    const lines = route.ordered.map((s, i) => {
-      const tag = i === 0 ? 'Origen' : i === route.ordered.length - 1 && returnsToOrigin ? 'Regreso' : `${i}`;
-      return `${tag}. ${name(s)} (${formatCoords(s.lat, s.lng, 5)})`;
-    });
-    const text = [
-      `Ruta óptima · ${formatDuration(route.durationSec)} · ${formatDistance(route.distanceMeters)}`,
-      ...lines,
-      ...links.map((l) => `${l.label}: ${l.url}`),
-    ].join('\n');
+  const copySummary = async () => {
+    const text = fenced ? wrapCodeBlock(clipboardText) : clipboardText;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -118,16 +114,29 @@ export function RouteSummary({ route, stale, originId, departureLabel, onShare, 
         ))}
       </ol>
 
+      {clipboardText && (
+        <div className="clip">
+          <div className="clip-head">
+            <h3>Resumen para el chofer</h3>
+            <label className="check small" title="Envuelve el texto en ``` para que WhatsApp lo muestre monoespaciado">
+              <input type="checkbox" checked={fenced} onChange={(e) => setFenced(e.target.checked)} />
+              Monoespaciado en WhatsApp
+            </label>
+          </div>
+          <pre className="clip-pre">{clipboardText}</pre>
+          <button type="button" className="btn btn-primary" onClick={copySummary}>
+            {copied ? 'Copiado ✓' : 'Copiar resumen'}
+          </button>
+        </div>
+      )}
+
       <div className="actions">
         {links.map((l) => (
-          <a key={l.url} className="btn btn-primary" href={l.url} target="_blank" rel="noreferrer">
+          <a key={l.url} className="btn" href={l.url} target="_blank" rel="noreferrer">
             {links.length > 1 ? `Navegar · ${l.label} (${l.stops} paradas)` : 'Navegar con Google Maps'}
           </a>
         ))}
         <div className="row">
-          <button type="button" className="btn btn-ghost" onClick={copyOrder}>
-            {copied ? 'Copiado ✓' : 'Copiar orden'}
-          </button>
           <button type="button" className="btn btn-ghost" onClick={onShare}>
             Compartir enlace
           </button>

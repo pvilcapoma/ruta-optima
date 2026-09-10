@@ -1,5 +1,6 @@
 import { useEffect, useReducer, type Dispatch } from 'react';
-import type { EndMode, OrderMode, PlannerState, Stop } from '../types';
+import type { Customer, EndMode, OrderMode, PlannerState, Stop, StopOrder } from '../types';
+import { refreshStopFromCustomer } from '../lib/customers';
 import { decodeShare, defaultState, loadState, saveState } from '../lib/storage';
 
 export const MAX_STOPS = 25;
@@ -14,6 +15,8 @@ export type PlannerAction =
   | { type: 'makeOrigin'; id: string }
   | { type: 'setEndMode'; endMode: EndMode }
   | { type: 'setOrderMode'; value: OrderMode }
+  | { type: 'setOrder'; id: string; patch: Partial<StopOrder> }
+  | { type: 'applyCustomer'; customer: Customer }
   | { type: 'setAvoidTolls'; value: boolean }
   | { type: 'setDeparture'; value: string | null }
   | { type: 'clear' };
@@ -61,6 +64,24 @@ export function plannerReducer(state: PlannerState, action: PlannerAction): Plan
       return fixEndMode({ ...state, endMode: action.endMode });
     case 'setOrderMode':
       return { ...state, orderMode: action.value };
+    case 'setOrder': {
+      // Las paradas sin cliente también pueden llevar G/R y bultos: se crea una orden mínima.
+      const withOrder = (s: Stop): Stop => {
+        const base: StopOrder = s.order ?? {
+          addressKind: 'principal',
+          gr: '',
+          bultos: null,
+          razonSocial: '',
+          telefono: '',
+          direccionTexto: s.label ?? '',
+          referencias: '',
+        };
+        return { ...s, order: { ...base, ...action.patch } };
+      };
+      return { ...state, stops: state.stops.map((s) => (s.id === action.id ? withOrder(s) : s)) };
+    }
+    case 'applyCustomer':
+      return { ...state, stops: state.stops.map((s) => refreshStopFromCustomer(s, action.customer)) };
     case 'setAvoidTolls':
       return { ...state, avoidTolls: action.value };
     case 'setDeparture':

@@ -10,7 +10,9 @@ export type CameraTarget =
 
 export type CameraRequest = CameraTarget & { nonce: number };
 
-type PinKind = 'origin' | 'stop' | 'final';
+type PinKind = 'origin' | 'stop' | 'final' | 'customer';
+
+export type CustomerPin = { id: string; lat: number; lng: number; label: string };
 
 type Props = {
   apiKey: string;
@@ -30,11 +32,16 @@ type Props = {
   onMapClick: (latlng: LatLng) => void;
   onMarkerClick: (id: string) => void;
   onMarkerDragEnd: (id: string, latlng: LatLng) => void;
+  /** Clientes de la base de datos a mostrar como pines grises (pestaña Clientes). */
+  customerPins?: CustomerPin[];
+  onCustomerClick?: (id: string) => void;
+  /** Modo "elegir en el mapa": cursor de cruz; el clic lo captura App para el formulario. */
+  pickMode?: boolean;
 };
 
 /* ---------- Pines SVG (cacheados por apariencia) ---------- */
 
-const PIN_COLORS: Record<PinKind, string> = { origin: '#16a34a', stop: '#2563eb', final: '#ea580c' };
+const PIN_COLORS: Record<PinKind, string> = { origin: '#16a34a', stop: '#2563eb', final: '#ea580c', customer: '#64748b' };
 const iconCache = new Map<string, L.DivIcon>();
 
 function escapeXml(s: string): string {
@@ -86,6 +93,16 @@ function CameraController({ request }: { request: CameraRequest | null }) {
   return null;
 }
 
+function PickCursor({ active }: { active: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    const el = map.getContainer();
+    el.classList.toggle('picking', active);
+    return () => el.classList.remove('picking');
+  }, [map, active]);
+  return null;
+}
+
 /** Leaflet necesita saber cuándo cambia el tamaño del contenedor (rotar el celular, etc.). */
 function ResizeWatcher() {
   const map = useMap();
@@ -117,6 +134,9 @@ export function MapView(props: Props) {
     onMapClick,
     onMarkerClick,
     onMarkerDragEnd,
+    customerPins = [],
+    onCustomerClick,
+    pickMode = false,
   } = props;
 
   const path = useMemo(() => route?.path ?? [], [route]);
@@ -145,6 +165,19 @@ export function MapView(props: Props) {
       <ClickCatcher onClick={onMapClick} />
       <CameraController request={camera} />
       <ResizeWatcher />
+      <PickCursor active={pickMode} />
+
+      {customerPins.map((c) => (
+        <Marker
+          key={`c-${c.id}`}
+          position={[c.lat, c.lng]}
+          icon={pinIcon('customer', '•', false)}
+          title={c.label}
+          bubblingMouseEvents={false}
+          zIndexOffset={-100}
+          eventHandlers={{ click: () => onCustomerClick?.(c.id) }}
+        />
+      ))}
 
       {path.length > 1 && (
         <>

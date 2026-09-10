@@ -12,6 +12,7 @@ type Props = {
   /** Punto para priorizar resultados cercanos (origen o centro del mapa). */
   near: LatLng | null;
   onPick: (place: PickedPlace) => void;
+  placeholder?: string;
 };
 
 function buildLabel(r: SearchResult): string | undefined {
@@ -21,7 +22,7 @@ function buildLabel(r: SearchResult): string | undefined {
 }
 
 /** Buscador de direcciones y negocios (TomTom Search) con autocompletado. */
-export function SearchBox({ apiKey, regionCodes, near, onPick }: Props) {
+export function SearchBox({ apiKey, regionCodes, near, onPick, placeholder }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [open, setOpen] = useState(false);
@@ -129,7 +130,7 @@ export function SearchBox({ apiKey, regionCodes, near, onPick }: Props) {
         className="input"
         type="search"
         autoComplete="off"
-        placeholder="Buscar dirección o negocio…"
+        placeholder={placeholder ?? 'Buscar dirección o negocio…'}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => results.length && setOpen(true)}

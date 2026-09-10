@@ -184,12 +184,14 @@ button:disabled {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .row > .btn {
   flex: 1;
 }
 
 .btn {
+  white-space: nowrap;
   border: 1px solid var(--line);
   background: #fff;
   border-radius: 10px;
@@ -406,7 +408,7 @@ button:disabled {
   display: grid;
   grid-template-columns: 30px 1fr auto;
   gap: 10px;
-  align-items: center;
+  align-items: start;
   padding: 8px 8px 8px 6px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -663,4 +665,267 @@ button:disabled {
   padding: 1px 6px;
   border-radius: 6px;
   font-size: 13px;
+}
+
+/* ---------- Pestañas ---------- */
+
+.tabs {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px;
+  background: #f1f5f9;
+}
+.tabs button {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.tabs button.on {
+  background: #fff;
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.count {
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 11px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+.tabs button:not(.on) .count {
+  background: #cbd5e1;
+  color: var(--text);
+}
+.toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+/* ---------- Clientes ---------- */
+
+.custlist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.custs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.cust {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px 10px;
+}
+.cust-open {
+  border-color: var(--primary);
+}
+.cust-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.cust-main {
+  flex: 1;
+  min-width: 0;
+}
+.cust-name {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.cust-sub {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cust-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.cust-add {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cust-empty {
+  display: block;
+}
+.tag {
+  font-size: 11px;
+  font-weight: 600;
+  background: #dcfce7;
+  color: #166534;
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.w-bultos {
+  width: 92px;
+  flex: 0 0 92px;
+}
+
+/* ---------- Formulario de cliente ---------- */
+
+.cform {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #f8fafc;
+}
+.cform .field {
+  gap: 4px;
+}
+.row.two {
+  align-items: flex-start;
+}
+.row.two > .field {
+  flex: 1;
+  min-width: 0;
+}
+.addr {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+  gap: 8px;
+}
+.addr-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.addr-coords {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+}
+.addr-coords .ok {
+  color: var(--origin);
+  font-weight: 600;
+}
+.link.on {
+  color: var(--final);
+}
+.self-start {
+  align-self: flex-start;
+}
+
+/* ---------- Orden por parada (G/R, bultos) ---------- */
+
+.stop-order {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.input-xs {
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+.stop-order .input-xs:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.stop-label.static {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- Resumen para portapapeles ---------- */
+
+.clip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.clip-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.clip-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.clip-pre {
+  margin: 0;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* ---------- Otros puntos (plegable) ---------- */
+
+details.block > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  list-style: none;
+}
+details.block > summary::-webkit-details-marker {
+  display: none;
+}
+details.block > summary::before {
+  content: '▸ ';
+}
+details.block[open] > summary::before {
+  content: '▾ ';
+}
+
+/* ---------- Modo elegir en el mapa ---------- */
+
+.leaflet-container.picking,
+.leaflet-container.picking .leaflet-grab,
+.leaflet-container.picking .leaflet-interactive {
+  cursor: crosshair !important;
+}
+.chip.chip-pick {
+  background: var(--final);
+  border-color: var(--final);
+  color: #fff;
 }

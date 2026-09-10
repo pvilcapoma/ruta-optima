@@ -1,19 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LatLng, OptimizedRoute, Stop, StopSource } from './types';
+import type { AddressKind, Customer, LatLng, OptimizedRoute, Stop, StopSource } from './types';
 import { usePlanner } from './hooks/usePlanner';
 import { useReverseGeocode } from './hooks/useGeocoder';
+import { useCustomers } from './hooks/useCustomers';
 import { MAX_STOPS, planRoute } from './lib/routes';
 import { TomTomError } from './lib/tomtom';
 import { encodeShare } from './lib/storage';
 import { buildDemoState } from './lib/demo';
+import { customerToStop, exportCustomersJson, parseCustomersJson, type CustomerDraft } from './lib/customers';
+import { buildDeliverySummary, deliveryPoints } from './lib/clipboard';
 import { newId } from './lib/id';
 import { formatClock } from './lib/format';
-import { MapView, type CameraRequest, type CameraTarget } from './components/MapView';
+import { MapView, type CameraRequest, type CameraTarget, type CustomerPin } from './components/MapView';
 import { SearchBox } from './components/SearchBox';
 import { CoordInput } from './components/CoordInput';
 import { StopList } from './components/StopList';
 import { RouteSummary } from './components/RouteSummary';
 import { SetupScreen } from './components/SetupScreen';
+import { CustomerForm, type PickedPoint } from './components/CustomerForm';
+import { CustomerList } from './components/CustomerList';
 
 const env = import.meta.env;
 const API_KEY: string = String(env.VITE_TOMTOM_API_KEY ?? '').trim();
@@ -27,6 +32,8 @@ const REGION_CODES: string[] = String(env.VITE_REGION_CODES ?? '')
   .filter(Boolean);
 
 type Notice = { kind: 'error' | 'info'; text: string; hint?: string };
+type Tab = 'ruta' | 'clientes';
+type Editing = { kind: 'new' } | { kind: 'edit'; customer: Customer } | null;
 
 export default function App() {
   if (!API_KEY || API_KEY === 'TU_CLAVE_AQUI') return <SetupScreen />;
@@ -36,6 +43,14 @@ export default function App() {
 function Planner({ apiKey }: { apiKey: string }) {
   const [state, dispatch] = usePlanner();
   const reverseGeocode = useReverseGeocode(apiKey);
+  const { customers, upsert, remove: removeCustomer, importMany } = useCustomers();
+
+  const [tab, setTab] = useState<Tab>('ruta');
+  const [editing, setEditing] = useState<Editing>(null);
+  const [pickTarget, setPickTarget] = useState<AddressKind | null>(null);
+  const [picked, setPicked] = useState<PickedPoint | null>(null);
+  const [othersOpen, setOthersOpen] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const [route, setRoute] = useState<OptimizedRoute | null>(null);
   const [routeKey, setRouteKey] = useState<string>('');
@@ -85,6 +100,36 @@ function Planner({ apiKey }: { apiKey: string }) {
     [route, routeStale, selectedLeg],
   );
 
+  /** Resumen para el chofer con los datos actuales de cada parada, en el orden optimizado. */
+  const clipboardText = useMemo(() => {
+    if (!route) return '';
+    const current = new Map(stops.map((s) => [s.id, s]));
+    const ordered = route.ordered.map((s) => current.get(s.id) ?? s);
+    return buildDeliverySummary(deliveryPoints(ordered, origin?.id));
+  }, [route, stops, origin]);
+
+  const inRoute = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of stops) {
+      const id = s.order?.customerId;
+      if (id) m.set(id, (m.get(id) ?? 0) + 1);
+    }
+    return m;
+  }, [stops]);
+
+  const customerPins = useMemo<CustomerPin[]>(
+    () =>
+      tab === 'clientes'
+        ? customers.flatMap((c) => [
+            { id: c.id, lat: c.direccion.lat, lng: c.direccion.lng, label: c.razonSocial },
+            ...(c.direccionSecundaria
+              ? [{ id: `${c.id}|2`, lat: c.direccionSecundaria.lat, lng: c.direccionSecundaria.lng, label: `${c.razonSocial} (secundaria)` }]
+              : []),
+          ])
+        : [],
+    [tab, customers],
+  );
+
   const moveCamera = useCallback((target: CameraTarget) => {
     nonce.current += 1;
     setCamera({ ...target, nonce: nonce.current });
@@ -95,6 +140,10 @@ function Planner({ apiKey }: { apiKey: string }) {
     const t = setTimeout(() => setNotice(null), 3500);
     return () => clearTimeout(t);
   }, [notice]);
+
+  useEffect(() => {
+    if (!origin) setOthersOpen(true);
+  }, [origin]);
 
   /* ---------- Agregar paradas ---------- */
 
@@ -128,7 +177,18 @@ function Planner({ apiKey }: { apiKey: string }) {
     [origin, stops, dispatch, fillLabel, moveCamera],
   );
 
-  const onMapClick = useCallback((ll: LatLng) => addPoints([ll], 'map', false), [addPoints]);
+  const onMapClick = useCallback(
+    (ll: LatLng) => {
+      if (pickTarget) {
+        setPicked({ target: pickTarget, lat: ll.lat, lng: ll.lng, nonce: Date.now() });
+        setPickTarget(null);
+        return;
+      }
+      if (tab !== 'ruta') return;
+      addPoints([ll], 'map', false);
+    },
+    [pickTarget, tab, addPoints],
+  );
 
   const onSearchPick = useCallback(
     (p: LatLng & { label?: string }) => {
@@ -163,6 +223,71 @@ function Planner({ apiKey }: { apiKey: string }) {
       (err) => setNotice({ kind: 'error', text: `No se pudo obtener tu ubicación (${err.message}).` }),
       { enableHighAccuracy: true, timeout: 10000 },
     );
+  };
+
+  /* ---------- Clientes ---------- */
+
+  const addCustomerToRoute = (c: Customer, kind: AddressKind, gr: string, bultos: number | null) => {
+    if (stops.length >= MAX_STOPS) {
+      setNotice({ kind: 'error', text: `Máximo ${MAX_STOPS} paradas por ruta.` });
+      return;
+    }
+    const stop = customerToStop(c, kind, gr, bultos);
+    dispatch({ type: 'addStops', stops: [stop] });
+    moveCamera({ kind: 'point', lat: stop.lat, lng: stop.lng });
+    setNotice({
+      kind: 'info',
+      text: origin
+        ? `${c.razonSocial} agregado a la ruta (${stops.length + 1} ${stops.length + 1 === 1 ? 'parada' : 'paradas'}).`
+        : `${c.razonSocial} agregado. Falta el origen (almacén): defínelo en "Otros puntos" o con Mi ubicación.`,
+    });
+  };
+
+  const saveCustomer = (draft: CustomerDraft, id?: string) => {
+    const saved = upsert(draft, id);
+    dispatch({ type: 'applyCustomer', customer: saved });
+    setEditing(null);
+    setPickTarget(null);
+    setNotice({ kind: 'info', text: id ? 'Cliente actualizado.' : `Cliente "${saved.razonSocial}" registrado.` });
+  };
+
+  const deleteCustomer = (c: Customer) => {
+    if (!window.confirm(`¿Eliminar a "${c.razonSocial}"? Las paradas ya agregadas a la ruta de hoy se mantienen.`)) return;
+    removeCustomer(c.id);
+    if (editing?.kind === 'edit' && editing.customer.id === c.id) setEditing(null);
+  };
+
+  const locateCustomer = (c: Customer) => moveCamera({ kind: 'point', lat: c.direccion.lat, lng: c.direccion.lng, zoom: 16 });
+
+  const onCustomerPinClick = (pinId: string) => {
+    const id = pinId.split('|')[0];
+    const c = customers.find((x) => x.id === id);
+    if (c) setEditing({ kind: 'edit', customer: c });
+  };
+
+  const exportCustomers = () => {
+    const blob = new Blob([exportCustomersJson(customers)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `clientes-ruta-optima-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const importCustomers = async (file: File) => {
+    try {
+      const list = parseCustomersJson(await file.text());
+      const replace =
+        customers.length > 0 &&
+        window.confirm(
+          `El archivo tiene ${list.length} clientes. ¿Reemplazar la lista actual (${customers.length})?\n\nAceptar = reemplazar · Cancelar = combinar sin borrar.`,
+        );
+      importMany(list, replace ? 'replace' : 'merge');
+      setNotice({ kind: 'info', text: `${list.length} clientes importados.` });
+    } catch (e) {
+      setNotice({ kind: 'error', text: e instanceof Error ? e.message : 'No se pudo importar el archivo.' });
+    }
   };
 
   /* ---------- Optimizar ---------- */
@@ -222,6 +347,7 @@ function Planner({ apiKey }: { apiKey: string }) {
     setSelectedId(null);
     setSelectedLeg(null);
     setNotice(null);
+    setTab('ruta');
     moveCamera({ kind: 'fit', points: [demo.origin!, ...demo.stops] });
     setAutoRun(true);
   };
@@ -252,7 +378,7 @@ function Planner({ apiKey }: { apiKey: string }) {
   };
 
   const clearAll = () => {
-    if (stops.length + (origin ? 1 : 0) > 0 && !window.confirm('¿Borrar origen, paradas y ruta?')) return;
+    if (stops.length + (origin ? 1 : 0) > 0 && !window.confirm('¿Borrar origen, paradas y ruta? Los clientes registrados no se borran.')) return;
     abortRef.current?.abort();
     dispatch({ type: 'clear' });
     setRoute(null);
@@ -282,6 +408,8 @@ function Planner({ apiKey }: { apiKey: string }) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }, [departureTime]);
 
+  const near = origin ?? DEFAULT_CENTER;
+
   return (
     <div className="app">
       <main className="map">
@@ -289,12 +417,12 @@ function Planner({ apiKey }: { apiKey: string }) {
           apiKey={apiKey}
           center={origin ?? stops[0] ?? DEFAULT_CENTER}
           origin={origin}
-          stops={stops}
+          stops={tab === 'ruta' ? stops : []}
           orderMap={orderMap}
           finalStopId={finalStopId}
-          route={route}
+          route={tab === 'ruta' ? route : null}
           routeStale={routeStale}
-          highlightPath={highlightPath}
+          highlightPath={tab === 'ruta' ? highlightPath : null}
           showTraffic={showTraffic}
           selectedId={selectedId}
           camera={camera}
@@ -303,31 +431,42 @@ function Planner({ apiKey }: { apiKey: string }) {
           onMarkerDragEnd={(id, ll) => {
             dispatch({ type: 'move', id, lat: ll.lat, lng: ll.lng });
             const s = id === origin?.id ? origin : stops.find((x) => x.id === id);
-            if (s) void fillLabel({ ...s, lat: ll.lat, lng: ll.lng, label: undefined });
+            if (s && !s.order?.customerId) void fillLabel({ ...s, lat: ll.lat, lng: ll.lng, label: undefined });
           }}
+          customerPins={customerPins}
+          onCustomerClick={onCustomerPinClick}
+          pickMode={pickTarget !== null}
         />
         <div className="map-overlay">
-          <label className="chip">
-            <input type="checkbox" checked={showTraffic} onChange={(e) => setShowTraffic(e.target.checked)} />
-            Tráfico
-          </label>
-          <button type="button" className="chip" onClick={useMyLocation} title="Usar mi ubicación como origen">
-            ◎ Mi ubicación
-          </button>
+          {pickTarget ? (
+            <button type="button" className="chip chip-pick" onClick={() => setPickTarget(null)}>
+              Toca el mapa para fijar la dirección {pickTarget} · cancelar
+            </button>
+          ) : (
+            <>
+              <label className="chip">
+                <input type="checkbox" checked={showTraffic} onChange={(e) => setShowTraffic(e.target.checked)} />
+                Tráfico
+              </label>
+              <button type="button" className="chip" onClick={useMyLocation} title="Usar mi ubicación como origen">
+                ◎ Mi ubicación
+              </button>
+            </>
+          )}
         </div>
       </main>
 
       <aside className="panel">
         <header className="panel-head">
           <h1>Ruta Óptima</h1>
-          <div className="row">
-            <button type="button" className="link" onClick={loadDemo} title="Cargar un reparto de ejemplo por Lima">
-              Ejemplo
+          <nav className="tabs" aria-label="Secciones">
+            <button type="button" className={tab === 'ruta' ? 'on' : ''} onClick={() => setTab('ruta')}>
+              Ruta{stops.length > 0 && <span className="count">{stops.length}</span>}
             </button>
-            <button type="button" className="link" onClick={clearAll} disabled={!origin && stops.length === 0}>
-              Limpiar
+            <button type="button" className={tab === 'clientes' ? 'on' : ''} onClick={() => setTab('clientes')}>
+              Clientes<span className="count">{customers.length}</span>
             </button>
-          </div>
+          </nav>
         </header>
 
         {notice && (
@@ -340,158 +479,260 @@ function Planner({ apiKey }: { apiKey: string }) {
           </div>
         )}
 
-        <section className="block">
-          <h2>Agregar paradas</h2>
-          <SearchBox apiKey={apiKey} onPick={onSearchPick} regionCodes={REGION_CODES} near={origin ?? DEFAULT_CENTER} />
-          <CoordInput onAdd={onCoordsAdd} />
-          <p className="hint">
-            También puedes <b>tocar el mapa</b> para poner un pin. El primer punto es el origen; arrastra los pines para
-            ajustarlos.
-          </p>
-        </section>
+        {tab === 'clientes' && (
+          <>
+            <section className="block">
+              <div className="row">
+                <button type="button" className="btn btn-primary" onClick={() => setEditing({ kind: 'new' })}>
+                  + Nuevo cliente
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={exportCustomers} disabled={customers.length === 0}>
+                  Exportar
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={() => fileInput.current?.click()}>
+                  Importar
+                </button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept=".json,application/json"
+                  hidden
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void importCustomers(f);
+                    e.target.value = '';
+                  }}
+                />
+              </div>
+              <p className="hint">
+                Los clientes se guardan en este dispositivo (navegador). Exporta un respaldo de vez en cuando y úsalo para
+                pasar la lista a otro equipo.
+              </p>
+            </section>
 
-        <section className="block">
-          <div className="block-head">
-            <h2>
-              Paradas <span className="muted">({stops.length}/{MAX_STOPS})</span>
-            </h2>
-          </div>
-          <StopList
-            origin={origin}
-            stops={stops}
-            orderMap={orderMap}
-            endMode={endMode}
-            selectedId={selectedId}
-            onSelect={focusStop}
-            onRemove={(id) => dispatch({ type: 'remove', id })}
-            onMakeOrigin={(id) => dispatch({ type: 'makeOrigin', id })}
-            onToggleFinal={(id) =>
-              dispatch({
-                type: 'setEndMode',
-                endMode: finalStopId === id ? { kind: 'origin' } : { kind: 'stop', stopId: id },
-              })
-            }
-            onRename={(id, label) => dispatch({ type: 'rename', id, label })}
-            onLoadDemo={loadDemo}
-          />
-        </section>
-
-        <section className="block">
-          <h2>Opciones</h2>
-
-          <div className="field">
-            <span className="field-label">La ruta termina</span>
-            <div className="seg">
-              <button
-                type="button"
-                className={endMode.kind === 'origin' ? 'on' : ''}
-                onClick={() => dispatch({ type: 'setEndMode', endMode: { kind: 'origin' } })}
-              >
-                En el origen
-              </button>
-              <button
-                type="button"
-                className={endMode.kind === 'stop' ? 'on' : ''}
-                disabled={endMode.kind !== 'stop'}
-                title="Marca una parada con ⚑ en la lista"
-              >
-                En parada ⚑
-              </button>
-              <button
-                type="button"
-                className={endMode.kind === 'best' ? 'on' : ''}
-                onClick={() => dispatch({ type: 'setEndMode', endMode: { kind: 'best' } })}
-                title="La app elige la mejor parada final"
-              >
-                Donde sea mejor
-              </button>
-            </div>
-            <p className="hint">
-              {endMode.kind === 'origin' && 'Ida y vuelta: sale del origen, visita todas las paradas y regresa al origen.'}
-              {endMode.kind === 'stop' && 'La ruta termina en la parada marcada con ⚑; las demás se ordenan antes.'}
-              {endMode.kind === 'best' &&
-                'La app prueba cada parada como posible final y elige la que da el menor tiempo total.'}
-            </p>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Ordenar paradas por</span>
-            <div className="seg seg-2">
-              <button
-                type="button"
-                className={orderMode === 'traffic' ? 'on' : ''}
-                onClick={() => dispatch({ type: 'setOrderMode', value: 'traffic' })}
-                title="Matriz de tiempos con tráfico en vivo (varias consultas)"
-              >
-                Tiempo con tráfico
-              </button>
-              <button
-                type="button"
-                className={orderMode === 'distance' ? 'on' : ''}
-                onClick={() => dispatch({ type: 'setOrderMode', value: 'distance' })}
-                title="Reordenamiento de TomTom por distancia (una consulta)"
-              >
-                Distancia
-              </button>
-            </div>
-            <p className="hint">
-              {orderMode === 'traffic'
-                ? 'Pide a TomTom cuánto se demora ir de cada parada a cada otra con el tráfico actual y elige el orden de menor tiempo total. Es el más preciso; usa 2 consultas hasta 9 paradas.'
-                : 'TomTom reordena las paradas para recorrer menos kilómetros, en 1 sola consulta. Los tiempos que se muestran sí consideran tráfico, pero el orden no lo tiene en cuenta.'}
-            </p>
-          </div>
-
-          <div className="field row">
-            <label className="field-label" htmlFor="departure">
-              Hora de salida
-            </label>
-            <input
-              id="departure"
-              type="datetime-local"
-              className="input input-sm"
-              value={departureInputValue}
-              onChange={(e) =>
-                dispatch({
-                  type: 'setDeparture',
-                  value: e.target.value ? new Date(e.target.value).toISOString() : null,
-                })
-              }
-            />
-            {departureTime && (
-              <button type="button" className="link" onClick={() => dispatch({ type: 'setDeparture', value: null })}>
-                Ahora
-              </button>
+            {editing && (
+              <CustomerForm
+                key={editing.kind === 'edit' ? editing.customer.id : 'new'}
+                apiKey={apiKey}
+                regionCodes={REGION_CODES}
+                near={near}
+                initial={editing.kind === 'edit' ? editing.customer : null}
+                picked={picked}
+                pickTarget={pickTarget}
+                onPickTarget={setPickTarget}
+                onLocate={(p) => moveCamera({ kind: 'point', lat: p.lat, lng: p.lng, zoom: 16 })}
+                reverseGeocode={reverseGeocode}
+                onSave={saveCustomer}
+                onCancel={() => {
+                  setEditing(null);
+                  setPickTarget(null);
+                }}
+              />
             )}
-          </div>
 
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={avoidTolls}
-              onChange={(e) => dispatch({ type: 'setAvoidTolls', value: e.target.checked })}
-            />
-            Evitar peajes
-          </label>
-        </section>
+            <section className="block">
+              <h2>
+                Clientes <span className="muted">({customers.length})</span>
+              </h2>
+              <CustomerList
+                customers={customers}
+                mode="manage"
+                inRoute={inRoute}
+                onAddToRoute={addCustomerToRoute}
+                onLocate={locateCustomer}
+                onEdit={(c) => setEditing({ kind: 'edit', customer: c })}
+                onDelete={deleteCustomer}
+                onNew={() => setEditing({ kind: 'new' })}
+              />
+            </section>
+          </>
+        )}
 
-        <div className="cta">
-          <button type="button" className="btn btn-primary btn-lg" disabled={!canOptimize} onClick={optimize}>
-            {loading ? 'Calculando con tráfico…' : routeStale ? 'Volver a optimizar' : 'Optimizar ruta'}
-          </button>
-          {!origin && <p className="hint">Primero define el origen.</p>}
-          {origin && stops.length === 0 && <p className="hint">Agrega al menos una parada.</p>}
-        </div>
+        {tab === 'ruta' && (
+          <>
+            <div className="toolbar">
+              <button type="button" className="link" onClick={loadDemo} title="Cargar un reparto de ejemplo por Lima">
+                Ejemplo
+              </button>
+              <button type="button" className="link" onClick={clearAll} disabled={!origin && stops.length === 0}>
+                Limpiar
+              </button>
+            </div>
 
-        {route && (
-          <RouteSummary
-            route={route}
-            stale={routeStale}
-            originId={origin?.id ?? ''}
-            departureLabel={departureLabel}
-            onShare={share}
-            selectedLeg={selectedLeg}
-            onSelectLeg={selectLeg}
-          />
+            <section className="block">
+              <div className="block-head">
+                <h2>Agregar clientes a la ruta</h2>
+                <button type="button" className="link" onClick={() => setTab('clientes')}>
+                  Gestionar →
+                </button>
+              </div>
+              <CustomerList
+                customers={customers}
+                mode="pick"
+                inRoute={inRoute}
+                onAddToRoute={addCustomerToRoute}
+                onLocate={locateCustomer}
+                onNew={() => {
+                  setTab('clientes');
+                  setEditing({ kind: 'new' });
+                }}
+              />
+            </section>
+
+            <details className="block" open={othersOpen} onToggle={(e) => setOthersOpen((e.target as HTMLDetailsElement).open)}>
+              <summary>Otros puntos: origen, direcciones o coordenadas</summary>
+              <SearchBox apiKey={apiKey} onPick={onSearchPick} regionCodes={REGION_CODES} near={near} />
+              <CoordInput onAdd={onCoordsAdd} />
+              <p className="hint">
+                El primer punto que agregues aquí (o tocando el mapa) es el <b>origen</b>, normalmente el almacén. Los
+                siguientes son paradas sueltas sin cliente. Arrastra los pines para ajustarlos.
+              </p>
+            </details>
+
+            <section className="block">
+              <div className="block-head">
+                <h2>
+                  Paradas <span className="muted">({stops.length}/{MAX_STOPS})</span>
+                </h2>
+              </div>
+              <StopList
+                origin={origin}
+                stops={stops}
+                orderMap={orderMap}
+                endMode={endMode}
+                selectedId={selectedId}
+                onSelect={focusStop}
+                onRemove={(id) => dispatch({ type: 'remove', id })}
+                onMakeOrigin={(id) => dispatch({ type: 'makeOrigin', id })}
+                onToggleFinal={(id) =>
+                  dispatch({
+                    type: 'setEndMode',
+                    endMode: finalStopId === id ? { kind: 'origin' } : { kind: 'stop', stopId: id },
+                  })
+                }
+                onRename={(id, label) => dispatch({ type: 'rename', id, label })}
+                onOrderChange={(id, patch) => dispatch({ type: 'setOrder', id, patch })}
+                onLoadDemo={loadDemo}
+              />
+            </section>
+
+            <section className="block">
+              <h2>Opciones</h2>
+
+              <div className="field">
+                <span className="field-label">La ruta termina</span>
+                <div className="seg">
+                  <button
+                    type="button"
+                    className={endMode.kind === 'origin' ? 'on' : ''}
+                    onClick={() => dispatch({ type: 'setEndMode', endMode: { kind: 'origin' } })}
+                  >
+                    En el origen
+                  </button>
+                  <button
+                    type="button"
+                    className={endMode.kind === 'stop' ? 'on' : ''}
+                    disabled={endMode.kind !== 'stop'}
+                    title="Marca una parada con ⚑ en la lista"
+                  >
+                    En parada ⚑
+                  </button>
+                  <button
+                    type="button"
+                    className={endMode.kind === 'best' ? 'on' : ''}
+                    onClick={() => dispatch({ type: 'setEndMode', endMode: { kind: 'best' } })}
+                    title="La app elige la mejor parada final"
+                  >
+                    Donde sea mejor
+                  </button>
+                </div>
+                <p className="hint">
+                  {endMode.kind === 'origin' && 'Ida y vuelta: sale del origen, visita todas las paradas y regresa al origen.'}
+                  {endMode.kind === 'stop' && 'La ruta termina en la parada marcada con ⚑; las demás se ordenan antes.'}
+                  {endMode.kind === 'best' &&
+                    'La app prueba cada parada como posible final y elige la que da el menor tiempo total.'}
+                </p>
+              </div>
+
+              <div className="field">
+                <span className="field-label">Ordenar paradas por</span>
+                <div className="seg seg-2">
+                  <button
+                    type="button"
+                    className={orderMode === 'traffic' ? 'on' : ''}
+                    onClick={() => dispatch({ type: 'setOrderMode', value: 'traffic' })}
+                  >
+                    Tiempo con tráfico
+                  </button>
+                  <button
+                    type="button"
+                    className={orderMode === 'distance' ? 'on' : ''}
+                    onClick={() => dispatch({ type: 'setOrderMode', value: 'distance' })}
+                  >
+                    Distancia
+                  </button>
+                </div>
+                <p className="hint">
+                  {orderMode === 'traffic'
+                    ? 'Pide a TomTom cuánto se demora ir de cada parada a cada otra con el tráfico actual y elige el orden de menor tiempo total. Es el más preciso; usa 2 consultas hasta 9 paradas.'
+                    : 'TomTom reordena las paradas para recorrer menos kilómetros, en 1 sola consulta. Los tiempos que se muestran sí consideran tráfico, pero el orden no lo tiene en cuenta.'}
+                </p>
+              </div>
+
+              <div className="field row">
+                <label className="field-label" htmlFor="departure">
+                  Hora de salida
+                </label>
+                <input
+                  id="departure"
+                  type="datetime-local"
+                  className="input input-sm"
+                  value={departureInputValue}
+                  onChange={(e) =>
+                    dispatch({
+                      type: 'setDeparture',
+                      value: e.target.value ? new Date(e.target.value).toISOString() : null,
+                    })
+                  }
+                />
+                {departureTime && (
+                  <button type="button" className="link" onClick={() => dispatch({ type: 'setDeparture', value: null })}>
+                    Ahora
+                  </button>
+                )}
+              </div>
+
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={avoidTolls}
+                  onChange={(e) => dispatch({ type: 'setAvoidTolls', value: e.target.checked })}
+                />
+                Evitar peajes
+              </label>
+            </section>
+
+            <div className="cta">
+              <button type="button" className="btn btn-primary btn-lg" disabled={!canOptimize} onClick={optimize}>
+                {loading ? 'Calculando con tráfico…' : routeStale ? 'Volver a optimizar' : 'Optimizar ruta'}
+              </button>
+              {!origin && <p className="hint">Primero define el origen (almacén).</p>}
+              {origin && stops.length === 0 && <p className="hint">Agrega al menos una parada.</p>}
+            </div>
+
+            {route && (
+              <RouteSummary
+                route={route}
+                stale={routeStale}
+                originId={origin?.id ?? ''}
+                departureLabel={departureLabel}
+                clipboardText={clipboardText}
+                onShare={share}
+                selectedLeg={selectedLeg}
+                onSelectLeg={selectLeg}
+              />
+            )}
+          </>
         )}
       </aside>
     </div>

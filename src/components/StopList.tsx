@@ -22,6 +22,11 @@ function Label({ stop, onRename }: { stop: Stop; onRename: (label: string) => vo
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(stop.label ?? '');
   if (stop.order?.customerId) return <div className="stop-label static">{stop.order.razonSocial || stop.label}</div>;
+  const commit = () => {
+    if (!editing) return;
+    setEditing(false);
+    if (draft.trim() !== (stop.label ?? '')) onRename(draft);
+  };
   if (editing) {
     return (
       <input
@@ -29,12 +34,12 @@ function Label({ stop, onRename }: { stop: Stop; onRename: (label: string) => vo
         autoFocus
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          setEditing(false);
-          onRename(draft);
-        }}
+        onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          }
           if (e.key === 'Escape') {
             setDraft(stop.label ?? '');
             setEditing(false);
